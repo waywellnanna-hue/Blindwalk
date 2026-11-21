@@ -39,7 +39,8 @@
 
   <script type="module">
     // The Claude SDK loads only when you first ask, so stroll mode still works if it cannot load.
-    const SDK_URL = 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@1.4.0/+esm';
+    // It is a copy kept in this repo (vendor/), so no outside site can change the code that runs here.
+    const SDK_URL = './vendor/anthropic-sdk-1.4.0.min.mjs';
 
     // Keys are typed into Settings and stored on this device only.
     function loadKey(name) { try { return localStorage.getItem(name) || ''; } catch (e) { return ''; } }

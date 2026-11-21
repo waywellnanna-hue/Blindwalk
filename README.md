@@ -21,3 +21,7 @@ The keys are saved only in Safari on that phone. They are never in the code, so 
 - In Google Cloud, restrict the Google key to your Pages address (`https://waywellnanna-hue.github.io/*`).
 - Set a monthly spend limit in the Claude Console.
 - Anyone else who opens the page can use it only with their own keys. Before giving this to other people, the Claude call should still move behind a small server, so they do not need a Claude key.
+
+## Third-party code
+
+The Claude SDK (`@anthropic-ai/sdk` 1.4.0) is copied into `vendor/` instead of loaded from a CDN, so the page only runs code from this repo. Licenses for it and its bundled dependencies are in `vendor/THIRD_PARTY_LICENSES.txt`.
