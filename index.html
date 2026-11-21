@@ -11,6 +11,8 @@
     button.secondary { padding: 32px 16px; background: #000; color: #ffd400; }
     label { display: block; font-size: 1.5rem; margin: 8px 0; }
     input { box-sizing: border-box; width: 100%; padding: 16px; font-size: 1.5rem; border: 4px solid #ffd400; border-radius: 16px; background: #000; color: #fff; margin-bottom: 16px; }
+    summary { font-size: 1.5rem; padding: 16px 0; color: #ffd400; }
+    #settings p { font-size: 1.25rem; line-height: 1.5; }
     #log { margin-top: 8px; font-size: 1.5rem; line-height: 1.5; }
   </style>
 </head>
@@ -23,14 +25,27 @@
   <button id="ask" class="secondary">Ask</button>
   <button id="speak" class="secondary" hidden>Speak question</button>
 
+  <details id="settings">
+    <summary>Settings: API keys</summary>
+    <p>Keys are saved only in this browser on this phone. They are never in the code or on GitHub.</p>
+    <label for="googleKey">Google Maps key</label>
+    <input id="googleKey" type="password" autocomplete="off">
+    <label for="claudeKey">Claude key</label>
+    <input id="claudeKey" type="password" autocomplete="off">
+    <button id="saveKeys" class="secondary">Save keys</button>
+  </details>
+
   <div id="log">Press Start, then walk. I will call out shops as you pass them.</div>
 
   <script type="module">
     // The Claude SDK loads only when you first ask, so stroll mode still works if it cannot load.
     const SDK_URL = 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@1.4.0/+esm';
 
-    const API_KEY = 'YOUR_API_KEY_HERE';               // Google Maps key
-    const ANTHROPIC_API_KEY = 'YOUR_ANTHROPIC_KEY_HERE'; // Claude key (step two)
+    // Keys are typed into Settings and stored on this device only.
+    function loadKey(name) { try { return localStorage.getItem(name) || ''; } catch (e) { return ''; } }
+    function storeKey(name, value) { try { localStorage.setItem(name, value); return true; } catch (e) { return false; } }
+    let API_KEY = loadKey('googleKey');            // Google Maps key
+    let ANTHROPIC_API_KEY = loadKey('claudeKey');  // Claude key (step two)
     const PASS_DISTANCE = 25;     // metres: how close a shop must be to be announced
     const REFRESH_DISTANCE = 20;  // metres walked before asking Google again
     const SEARCH_RADIUS = 60;     // metres: how far around you Google looks
@@ -45,6 +60,22 @@
     let watchId = null, lastPos = null, lastFetchPos = null, heading = null;
     let places = [], announced = new Set(), recent = [];
     let wakeLock = null, asking = false, locationLost = false, lastGoodFix = 0;
+
+    const settingsEl = document.getElementById('settings');
+    const googleKeyEl = document.getElementById('googleKey');
+    const claudeKeyEl = document.getElementById('claudeKey');
+    googleKeyEl.value = API_KEY;
+    claudeKeyEl.value = ANTHROPIC_API_KEY;
+    if (!API_KEY) settingsEl.open = true;
+
+    document.getElementById('saveKeys').addEventListener('click', () => {
+      API_KEY = googleKeyEl.value.trim();
+      ANTHROPIC_API_KEY = claudeKeyEl.value.trim();
+      claude = null; // rebuild the Claude client with the new key
+      const saved = storeKey('googleKey', API_KEY) && storeKey('claudeKey', ANTHROPIC_API_KEY);
+      settingsEl.open = false;
+      say(saved ? 'Keys saved.' : 'Keys set for now, but this browser would not save them. You will need to enter them again next time.');
+    });
 
     let claude = null;
     async function getClaude() {
@@ -176,6 +207,7 @@
 
     toggle.addEventListener('click', () => {
       if (watchId === null) {
+        if (!API_KEY) { settingsEl.open = true; say('Add your Google Maps key in Settings first.'); return; }
         watchId = navigator.geolocation.watchPosition(
           onPosition,
           onLocationError,
@@ -234,6 +266,7 @@
 
     async function ask(question) {
       if (!question) { say('Type or speak a question first.'); return; }
+      if (!ANTHROPIC_API_KEY) { settingsEl.open = true; say('Add your Claude key in Settings first.'); return; }
       if (asking) return;
 
       // Candidates: recently announced shops first, then the closest ones.

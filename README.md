@@ -8,12 +8,16 @@ See businesses around you with the help of GPS.
 
 ## Setup
 
-1. Put your Google Maps key (Places API (New) enabled) in `API_KEY`.
-2. Put your Claude API key in `ANTHROPIC_API_KEY`.
-3. Host the file over HTTPS (GitHub Pages or Netlify). Safari only allows location on secure pages.
+1. Host the file over HTTPS. Safari only allows location on secure pages. This repo is set up for GitHub Pages: Settings, Pages, deploy from this branch, root folder.
+2. Open the page on your iPhone and open **Settings: API keys**.
+3. Enter your Google Maps key (Places API (New) enabled) and your Claude key, then tap **Save keys**.
+
+The keys are saved only in Safari on that phone. They are never in the code, so the public repo and the public page contain no keys. If you clear Safari's website data, you will need to enter them again.
 
 ## Cost and safety
 
 - Each question makes up to 3 Google Place Details calls that include reviews. That is a pricier Google tier than the nearby search, so check Google's pricing page.
 - Each question also makes one Claude call.
-- **Both keys sit in the page.** Anyone who opens the page can copy them. The Google key can be locked to your site's address; the Claude key cannot. Keep the link private, set a monthly spend limit in the Claude Console, and move the Claude call behind a small server before sharing this with anyone.
+- In Google Cloud, restrict the Google key to your Pages address (`https://waywellnanna-hue.github.io/*`).
+- Set a monthly spend limit in the Claude Console.
+- Anyone else who opens the page can use it only with their own keys. Before giving this to other people, the Claude call should still move behind a small server, so they do not need a Claude key.
