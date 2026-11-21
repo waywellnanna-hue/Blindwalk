@@ -20,17 +20,20 @@
   <h1>Stroll</h1>
   <button id="toggle" aria-label="Start stroll mode">Start</button>
 
-  <label for="question">Ask about a place</label>
-  <input id="question" type="text" autocomplete="off" placeholder="Is that bakery open?">
-  <button id="ask" class="secondary">Ask</button>
-  <button id="speak" class="secondary" hidden>Speak question</button>
+  <section id="askSection" hidden>
+    <label for="question">Ask about a place</label>
+    <input id="question" type="text" autocomplete="off" placeholder="Is that bakery open?">
+    <button id="ask" class="secondary">Ask</button>
+    <button id="speak" class="secondary" hidden>Speak question</button>
+  </section>
 
   <details id="settings">
     <summary>Settings: API keys</summary>
+    <p>Only the Google key is needed for shop call-outs. Leave the Claude key empty if you do not want to ask questions.</p>
     <p>Keys are saved only in this browser on this phone. They are never in the code or on GitHub.</p>
     <label for="googleKey">Google Maps key</label>
     <input id="googleKey" type="password" autocomplete="off">
-    <label for="claudeKey">Claude key</label>
+    <label for="claudeKey">Claude key (optional: only needed to ask questions)</label>
     <input id="claudeKey" type="password" autocomplete="off">
     <button id="saveKeys" class="secondary">Save keys</button>
   </details>
@@ -69,13 +72,20 @@
     claudeKeyEl.value = ANTHROPIC_API_KEY;
     if (!API_KEY) settingsEl.open = true;
 
+    // Questions appear only when a Claude key is set, so the page stays simple without one.
+    const askSection = document.getElementById('askSection');
+    function updateAskSection() { askSection.hidden = !ANTHROPIC_API_KEY; }
+    updateAskSection();
+
     document.getElementById('saveKeys').addEventListener('click', () => {
       API_KEY = googleKeyEl.value.trim();
       ANTHROPIC_API_KEY = claudeKeyEl.value.trim();
       claude = null; // rebuild the Claude client with the new key
       const saved = storeKey('googleKey', API_KEY) && storeKey('claudeKey', ANTHROPIC_API_KEY);
       settingsEl.open = false;
-      say(saved ? 'Keys saved.' : 'Keys set for now, but this browser would not save them. You will need to enter them again next time.');
+      updateAskSection();
+      const note = ANTHROPIC_API_KEY ? '' : ' Questions are off because there is no Claude key. Shop call-outs still work.';
+      say((saved ? 'Keys saved.' : 'Keys set for now, but this browser would not save them. You will need to enter them again next time.') + note);
     });
 
     let claude = null;
