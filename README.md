@@ -10,7 +10,7 @@ See businesses around you with the help of GPS.
 
 1. Host the file over HTTPS. Safari only allows location on secure pages. This repo is set up for GitHub Pages: Settings, Pages, deploy from this branch, root folder.
 2. Open the page on your iPhone and open **Settings: API keys**.
-3. Enter your Google Maps key (Places API (New) enabled) and your Claude key, then tap **Save keys**.
+3. Enter your Google Maps key (Places API (New) enabled), then tap **Save keys**. The Claude key is optional: add it only if you want to ask questions. Without it, shop call-outs work and the Ask controls are hidden.
 
 The keys are saved only in Safari on that phone. They are never in the code, so the public repo and the public page contain no keys. If you clear Safari's website data, you will need to enter them again.
 
