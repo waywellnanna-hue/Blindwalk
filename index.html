@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stroll</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; margin: 0; padding: 16px; background: #000; color: #fff; }
+    button { width: 100%; padding: 48px 16px; font-size: 2rem; font-weight: bold; border: 4px solid #ffd400; border-radius: 16px; background: #ffd400; color: #000; margin-bottom: 16px; }
+    button.running { background: #000; color: #ffd400; }
+    button.secondary { padding: 32px 16px; background: #000; color: #ffd400; }
+    label { display: block; font-size: 1.5rem; margin: 8px 0; }
+    input { box-sizing: border-box; width: 100%; padding: 16px; font-size: 1.5rem; border: 4px solid #ffd400; border-radius: 16px; background: #000; color: #fff; margin-bottom: 16px; }
+    #log { margin-top: 8px; font-size: 1.5rem; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <h1>Stroll</h1>
+  <button id="toggle" aria-label="Start stroll mode">Start</button>
+
+  <label for="question">Ask about a place</label>
+  <input id="question" type="text" autocomplete="off" placeholder="Is that bakery open?">
+  <button id="ask" class="secondary">Ask</button>
+  <button id="speak" class="secondary" hidden>Speak question</button>
+
+  <div id="log">Press Start, then walk. I will call out shops as you pass them.</div>
+
+  <script type="module">
+    // The Claude SDK loads only when you first ask, so stroll mode still works if it cannot load.
+    const SDK_URL = 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@1.4.0/+esm';
+
+    const API_KEY = 'YOUR_API_KEY_HERE';               // Google Maps key
+    const ANTHROPIC_API_KEY = 'YOUR_ANTHROPIC_KEY_HERE'; // Claude key (step two)
+    const PASS_DISTANCE = 25;     // metres: how close a shop must be to be announced
+    const REFRESH_DISTANCE = 20;  // metres walked before asking Google again
+    const SEARCH_RADIUS = 60;     // metres: how far around you Google looks
+    const ASK_CANDIDATES = 3;     // how many nearby places to look up when you ask
+    const SHOP_TYPES = ['restaurant', 'cafe', 'bakery', 'pharmacy', 'clothing_store', 'convenience_store', 'supermarket', 'book_store', 'store', 'bank', 'hair_care', 'shoe_store', 'jewelry_store', 'florist', 'liquor_store'];
+
+    const toggle = document.getElementById('toggle');
+    const askBtn = document.getElementById('ask');
+    const speakBtn = document.getElementById('speak');
+    const questionEl = document.getElementById('question');
+    const logEl = document.getElementById('log');
+    let watchId = null, lastPos = null, lastFetchPos = null, heading = null;
+    let places = [], announced = new Set(), recent = [];
+    let wakeLock = null, asking = false, locationLost = false, lastGoodFix = 0;
+
+    let claude = null;
+    async function getClaude() {
+      if (!claude) {
+        const { default: Anthropic } = await import(SDK_URL);
+        claude = new Anthropic({ apiKey: ANTHROPIC_API_KEY, dangerouslyAllowBrowser: true });
+      }
+      return claude;
+    }
+
+    function say(text) {
+      logEl.textContent = text;
+      window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+    }
+
+    // ---------- Keep the screen awake while strolling ----------
+
+    async function keepAwake() {
+      if (!('wakeLock' in navigator)) return;
+      try {
+        wakeLock = await navigator.wakeLock.request('screen');
+      } catch (error) {
+        // Refused, for example in Low Power Mode. Stroll mode still works; the screen may lock.
+        wakeLock = null;
+      }
+    }
+
+    function allowSleep() {
+      if (wakeLock) wakeLock.release();
+      wakeLock = null;
+    }
+
+    // The browser drops the lock when the page is hidden, so take it again on return.
+    document.addEventListener('visibilitychange', () => {
+      if (watchId !== null && document.visibilityState === 'visible') keepAwake();
+    });
+
+    // ---------- Geometry ----------
+
+    function rad(d) { return d * Math.PI / 180; }
+
+    function distance(a, b) {
+      const dLat = rad(b.lat - a.lat), dLon = rad(b.lon - a.lon);
+      const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLon / 2) ** 2;
+      return 12742000 * Math.asin(Math.sqrt(h));
+    }
+
+    function bearing(a, b) {
+      const y = Math.sin(rad(b.lon - a.lon)) * Math.cos(rad(b.lat));
+      const x = Math.cos(rad(a.lat)) * Math.sin(rad(b.lat)) - Math.sin(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.cos(rad(b.lon - a.lon));
+      return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+    }
+
+    function side(pos, place) {
+      if (heading === null || pos.accuracy > 20) return 'near you';
+      const angle = ((bearing(pos, place) - heading + 540) % 360) - 180;
+      if (Math.abs(angle) < 25) return 'ahead';
+      if (Math.abs(angle) > 155) return 'just behind you';
+      return angle > 0 ? 'on your right' : 'on your left';
+    }
+
+    // ---------- Step one: stroll mode ----------
+
+    async function fetchPlaces(pos) {
+      lastFetchPos = pos;
+      try {
+        const res = await fetch('https://places.googleapis.com/v1/places:searchNearby', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Goog-Api-Key': API_KEY,
+            'X-Goog-FieldMask': 'places.id,places.displayName,places.location,places.primaryTypeDisplayName'
+          },
+          body: JSON.stringify({
+            includedTypes: SHOP_TYPES,
+            maxResultCount: 20,
+            rankPreference: 'DISTANCE',
+            locationRestriction: { circle: { center: { latitude: pos.lat, longitude: pos.lon }, radius: SEARCH_RADIUS } }
+          })
+        });
+        if (!res.ok) throw new Error('Places request failed');
+        const data = await res.json();
+        places = (data.places || []).map(p => ({
+          id: p.id,
+          name: p.displayName ? p.displayName.text : 'A shop',
+          kind: p.primaryTypeDisplayName ? p.primaryTypeDisplayName.text : '',
+          lat: p.location.latitude,
+          lon: p.location.longitude
+        }));
+      } catch (error) {
+        say('I could not load shop data.');
+      }
+    }
+
+    function onPosition(position) {
+      const pos = { lat: position.coords.latitude, lon: position.coords.longitude, accuracy: position.coords.accuracy };
+      lastGoodFix = Date.now();
+      if (locationLost) { locationLost = false; say('Location is back.'); }
+      if (!lastPos) {
+        lastPos = pos;
+      } else if (distance(lastPos, pos) >= 8) {
+        heading = bearing(lastPos, pos);
+        lastPos = pos;
+      }
+      if (!lastFetchPos || distance(lastFetchPos, pos) >= REFRESH_DISTANCE) fetchPlaces(pos);
+      if (heading === null || asking) return;
+
+      const nearby = places
+        .filter(p => !announced.has(p.id) && distance(pos, p) <= PASS_DISTANCE)
+        .sort((a, b) => distance(pos, a) - distance(pos, b))
+        .slice(0, 2);
+      for (const p of nearby) {
+        announced.add(p.id);
+        recent = [p, ...recent.filter(r => r.id !== p.id)].slice(0, 5);
+        say(p.name + (p.kind ? ', ' + p.kind : '') + ', ' + side(pos, p) + '.');
+      }
+    }
+
+    // Speak a location problem once, and only after 15 seconds without a fix, so brief GPS dropouts stay silent.
+    function onLocationError(error) {
+      if (error.code === error.PERMISSION_DENIED) {
+        say('Location is blocked. Allow Safari to use your location, then press Stop and Start.');
+        locationLost = true;
+      } else if (!locationLost && Date.now() - lastGoodFix > 15000) {
+        say('Location is unavailable right now. I will tell you when it is back.');
+        locationLost = true;
+      }
+    }
+
+    toggle.addEventListener('click', () => {
+      if (watchId === null) {
+        watchId = navigator.geolocation.watchPosition(
+          onPosition,
+          onLocationError,
+          { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 }
+        );
+        keepAwake();
+        lastGoodFix = Date.now();
+        toggle.textContent = 'Stop';
+        toggle.className = 'running';
+        toggle.setAttribute('aria-label', 'Stop stroll mode');
+        say('Stroll mode on. Start walking and I will call out shops.');
+      } else {
+        navigator.geolocation.clearWatch(watchId);
+        allowSleep();
+        watchId = null; lastPos = null; lastFetchPos = null; heading = null; locationLost = false;
+        places = []; announced = new Set(); recent = [];
+        toggle.textContent = 'Start';
+        toggle.className = '';
+        toggle.setAttribute('aria-label', 'Start stroll mode');
+        window.speechSynthesis.cancel();
+        say('Stroll mode off.');
+      }
+    });
+
+    // ---------- Step two: ask about a place ----------
+
+    async function placeDetails(id) {
+      const res = await fetch('https://places.googleapis.com/v1/places/' + encodeURIComponent(id), {
+        headers: {
+          'X-Goog-Api-Key': API_KEY,
+          'X-Goog-FieldMask': 'displayName,primaryTypeDisplayName,formattedAddress,currentOpeningHours,regularOpeningHours,rating,userRatingCount,editorialSummary,reviews'
+        }
+      });
+      if (!res.ok) throw new Error('Place details failed');
+      return res.json();
+    }
+
+    function describe(place, details) {
+      const lines = ['Name: ' + place.name];
+      if (place.kind) lines.push('Type: ' + place.kind);
+      if (lastPos) lines.push('Position: about ' + Math.round(distance(lastPos, place)) + ' metres, ' + side(lastPos, place));
+      if (recent.length && recent[0].id === place.id) lines.push('This was the most recent shop announced.');
+      if (details.formattedAddress) lines.push('Address: ' + details.formattedAddress);
+      const hours = details.currentOpeningHours || details.regularOpeningHours;
+      if (hours) {
+        if (typeof hours.openNow === 'boolean') lines.push('Open now: ' + (hours.openNow ? 'yes' : 'no'));
+        if (hours.weekdayDescriptions) lines.push('Hours: ' + hours.weekdayDescriptions.join('; '));
+      }
+      if (details.rating) lines.push('Rating: ' + details.rating + ' from ' + (details.userRatingCount || 0) + ' reviews');
+      if (details.editorialSummary) lines.push('Summary: ' + details.editorialSummary.text);
+      for (const r of (details.reviews || []).slice(0, 3)) {
+        if (r.text && r.text.text) lines.push('Review: ' + r.text.text.slice(0, 300));
+      }
+      return lines.join('\n');
+    }
+
+    async function ask(question) {
+      if (!question) { say('Type or speak a question first.'); return; }
+      if (asking) return;
+
+      // Candidates: recently announced shops first, then the closest ones.
+      const pool = [...recent];
+      if (lastPos) {
+        for (const p of [...places].sort((a, b) => distance(lastPos, a) - distance(lastPos, b))) {
+          if (!pool.some(q => q.id === p.id)) pool.push(p);
+        }
+      }
+      const candidates = pool.slice(0, ASK_CANDIDATES);
+      if (!candidates.length) { say('I do not know of any shops near you yet. Start stroll mode and walk a little.'); return; }
+
+      asking = true;
+      window.speechSynthesis.cancel();
+      say('Checking.');
+      try {
+        const details = await Promise.all(candidates.map(p => placeDetails(p.id).catch(() => ({}))));
+        const context = candidates.map((p, i) => 'Place ' + (i + 1) + '\n' + describe(p, details[i])).join('\n\n');
+
+        const client = await getClaude();
+        const response = await client.beta.messages.create({
+          model: 'claude-opus-5-5',
+          max_tokens: 2000,
+          output_config: { effort: 'low' },
+          betas: ['server-side-fallback-2026-07-01'],
+          fallbacks: 'default',
+          system: 'You help a blind person who is walking down a street. They ask about shops near them. ' +
+            'Answer in one short sentence that will be read aloud: plain words, no lists, no markdown, no symbols. ' +
+            'Use only the place data given. If the data does not answer the question, say so plainly. ' +
+            'If it is unclear which place they mean, pick the most recently announced one and name it.',
+          messages: [{
+            role: 'user',
+            content: 'Local time: ' + new Date().toLocaleString() + '\n\n' + context + '\n\nQuestion: ' + question
+          }]
+        });
+
+        if (response.stop_reason === 'refusal') {
+          say('I cannot answer that one.');
+        } else {
+          const text = response.content.filter(b => b.type === 'text').map(b => b.text).join(' ').trim();
+          say(text || 'I did not get an answer.');
+        }
+      } catch (error) {
+        say('I could not get an answer. Check your connection and your Claude key.');
+      } finally {
+        asking = false;
+      }
+    }
+
+    askBtn.addEventListener('click', () => ask(questionEl.value.trim()));
+    questionEl.addEventListener('keydown', e => { if (e.key === 'Enter') ask(questionEl.value.trim()); });
+
+    // Voice input, where Safari supports it. Keyboard dictation works as well.
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (Recognition) {
+      speakBtn.hidden = false;
+      speakBtn.addEventListener('click', () => {
+        window.speechSynthesis.cancel();
+        const rec = new Recognition();
+        rec.lang = 'en-US';
+        rec.interimResults = false;
+        rec.onresult = e => {
+          const text = e.results[0][0].transcript;
+          questionEl.value = text;
+          ask(text);
+        };
+        rec.onerror = () => say('I did not catch that. Try again, or type your question.');
+        rec.start();
+        logEl.textContent = 'Listening.';
+      });
+    }
+  </script>
+</body>
+</html>
